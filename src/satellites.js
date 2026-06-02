@@ -241,6 +241,20 @@ export function eciToScene(eci) {
   return [eci.x * KM_TO_UNITS, eci.z * KM_TO_UNITS, -eci.y * KM_TO_UNITS];
 }
 
+// Convert geographic coordinates to a point on the Earth-fixed sphere of the
+// given scene `radius`, in the same axis convention the satellites use. Because
+// it is Earth-fixed, the result can be parented to the Earth mesh (which is
+// rotated by GMST) and will line up under the live satellite positions.
+export function geodeticToScene(latDeg, lonDeg, radius = EARTH_RADIUS_UNITS) {
+  const lat = (latDeg * Math.PI) / 180;
+  const lon = (lonDeg * Math.PI) / 180;
+  const x = Math.cos(lat) * Math.cos(lon);
+  const y = Math.cos(lat) * Math.sin(lon);
+  const z = Math.sin(lat);
+  // Same ECI->scene mapping used for satellites: (x, z, -y).
+  return [x * radius, z * radius, -y * radius];
+}
+
 // Ground track: geodetic lat/lon samples along the orbit across `orbits`
 // revolutions starting at `date`. Returns [{ latDeg, lonDeg, altitudeKm }].
 export function groundTrack(satrec, date, { orbits = 1, samples = 180 } = {}) {

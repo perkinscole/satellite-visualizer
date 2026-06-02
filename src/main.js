@@ -8,7 +8,10 @@ import {
   orbitalElements,
   satelliteState,
   eciToScene,
+  geodeticToScene,
+  groundTrack,
   EARTH_RADIUS_UNITS,
+  EARTH_RADIUS_KM,
 } from './satellites.js';
 
 const EARTH_TEXTURE =
@@ -151,8 +154,29 @@ scene.add(marker);
 
 let selected = null; // { group, idx }
 let follow = false;
+let showTrack = true;
 let detailCells = null;
 let lastDetailUpdate = 0;
+let lastTrackBuild = 0;
+
+// Ground track (one orbit, Earth-fixed) and coverage footprint. Both are
+// parented to the Earth mesh so they rotate with it.
+const TRACK_RADIUS = EARTH_RADIUS_UNITS * 1.004;
+const trackLine = new THREE.Line(
+  new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 })
+);
+trackLine.frustumCulled = false;
+trackLine.visible = false;
+earth.add(trackLine);
+
+const footprintLine = new THREE.LineLoop(
+  new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 })
+);
+footprintLine.frustumCulled = false;
+footprintLine.visible = false;
+earth.add(footprintLine);
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -249,6 +273,10 @@ function selectSatellite(group, idx) {
 
   showDetail(group, idx);
   marker.visible = true;
+  buildGroundTrack();
+  lastTrackBuild = performance.now();
+  trackLine.visible = showTrack;
+  footprintLine.visible = showTrack;
   frameSelection();
 }
 
@@ -256,6 +284,8 @@ function deselect() {
   selected = null;
   follow = false;
   marker.visible = false;
+  trackLine.visible = false;
+  footprintLine.visible = false;
   detailCells = null;
   detailEl.hidden = true;
 }
@@ -271,6 +301,10 @@ function showDetail(group, idx) {
     <label class="d-follow">
       <input type="checkbox" id="follow-toggle" ${follow ? 'checked' : ''}/>
       Follow with camera
+    </label>
+    <label class="d-follow">
+      <input type="checkbox" id="track-toggle" ${showTrack ? 'checked' : ''}/>
+      Show ground track &amp; coverage
     </label>
     <div class="d-grid">
       <div class="cell"><span class="k">Altitude</span><span class="v" data-f="alt">&mdash;</span></div>
@@ -292,7 +326,67 @@ function showDetail(group, idx) {
   detailBodyEl.querySelector('#follow-toggle').addEventListener('change', (e) => {
     follow = e.target.checked;
   });
+  detailBodyEl.querySelector('#track-toggle').addEventListener('change', (e) => {
+    showTrack = e.target.checked;
+    trackLine.visible = showTrack;
+    footprintLine.visible = showTrack;
+    if (showTrack) buildGroundTrack();
+  });
   detailEl.hidden = false;
+}
+
+// Rebuild the one-orbit ground-track polyline for the selected satellite,
+// in Earth-fixed scene coordinates (the line is a child of the Earth mesh).
+function buildGroundTrack() {
+  if (!selected) return;
+  const satrec = selected.group.sats[selected.idx].satrec;
+  const pts = groundTrack(satrec, simTime, { orbits: 1, samples: 240 });
+  const arr = new Float32Array(pts.length * 3);
+  for (let i = 0; i < pts.length; i++) {
+    const [x, y, z] = geodeticToScene(pts[i].latDeg, pts[i].lonDeg, TRACK_RADIUS);
+    arr[i * 3] = x;
+    arr[i * 3 + 1] = y;
+    arr[i * 3 + 2] = z;
+  }
+  trackLine.geometry.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  trackLine.geometry.computeBoundingSphere();
+  const color = selected.group.meta ? selected.group.meta.color : 0xffffff;
+  trackLine.material.color.setHex(color);
+  footprintLine.material.color.setHex(color);
+}
+
+// Recompute the coverage footprint: the circle on the surface from which the
+// satellite is above the horizon, centered on the current sub-satellite point.
+const FOOT_SEGMENTS = 96;
+const footArr = new Float32Array(FOOT_SEGMENTS * 3);
+function updateFootprint(st) {
+  const cosA = EARTH_RADIUS_KM / (EARTH_RADIUS_KM + st.altitudeKm);
+  const alpha = Math.acos(Math.min(1, Math.max(-1, cosA))); // central angle to horizon
+  const [cx, cy, cz] = geodeticToScene(st.latDeg, st.lonDeg, 1);
+  const center = new THREE.Vector3(cx, cy, cz);
+  const ref = Math.abs(center.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const u = new THREE.Vector3().crossVectors(center, ref).normalize();
+  const v = new THREE.Vector3().crossVectors(center, u).normalize();
+  const ca = Math.cos(alpha);
+  const sa = Math.sin(alpha);
+  for (let i = 0; i < FOOT_SEGMENTS; i++) {
+    const th = (i / FOOT_SEGMENTS) * Math.PI * 2;
+    const k1 = sa * Math.cos(th);
+    const k2 = sa * Math.sin(th);
+    const x = (center.x * ca + u.x * k1 + v.x * k2) * TRACK_RADIUS;
+    const y = (center.y * ca + u.y * k1 + v.y * k2) * TRACK_RADIUS;
+    const z = (center.z * ca + u.z * k1 + v.z * k2) * TRACK_RADIUS;
+    footArr[i * 3] = x;
+    footArr[i * 3 + 1] = y;
+    footArr[i * 3 + 2] = z;
+  }
+  const attr = footprintLine.geometry.getAttribute('position');
+  if (!attr || attr.array.length !== footArr.length) {
+    footprintLine.geometry.setAttribute('position', new THREE.BufferAttribute(footArr, 3));
+  } else {
+    attr.array.set(footArr);
+    attr.needsUpdate = true;
+  }
 }
 
 // Center the camera on the selected satellite and dolly to a close framing.
@@ -326,6 +420,15 @@ function updateSelection(gmst) {
   marker.position.set(x, y, z);
 
   const nowMs = performance.now();
+  if (showTrack) {
+    updateFootprint(st);
+    // Rebuild the ground track occasionally so it stays current as the orbit
+    // and Earth rotation shift it (cheap enough twice a second).
+    if (nowMs - lastTrackBuild > 500) {
+      lastTrackBuild = nowMs;
+      buildGroundTrack();
+    }
+  }
   if (detailCells && nowMs - lastDetailUpdate > 180) {
     lastDetailUpdate = nowMs;
     detailCells.alt.textContent = `${Math.round(st.altitudeKm).toLocaleString()} km`;
