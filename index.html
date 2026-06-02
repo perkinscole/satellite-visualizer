@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orbital — Live Satellite Visualizer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+
+      <header id="title">
+        <h1>Orbital</h1>
+        <p>Live satellites tracked in real time</p>
+        <nav class="nav-links">
+          <a href="/" class="active">Visualizer</a>
+          <a href="/learn.html">Learn</a>
+          <a href="/launches.html">Launches</a>
+        </nav>
+      </header>
+
+      <div id="loading">Loading orbital data&hellip;</div>
+
+      <aside id="panel">
+        <h2>Groups</h2>
+        <div id="groups"></div>
+
+        <h2>Time</h2>
+        <div class="time-controls">
+          <button data-rate="1">1&times;</button>
+          <button data-rate="60">60&times;</button>
+          <button data-rate="600">600&times;</button>
+          <button data-rate="3600">3600&times;</button>
+        </div>
+        <div id="clock">—</div>
+
+        <div id="counts"></div>
+      </aside>
+
+      <div id="tooltip"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
