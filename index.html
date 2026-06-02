@@ -23,6 +23,18 @@
       <div id="loading">Loading orbital data&hellip;</div>
 
       <aside id="panel">
+        <h2>Find a satellite</h2>
+        <div class="search-wrap">
+          <input
+            id="search"
+            type="text"
+            placeholder="Name or NORAD ID&hellip;"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <div id="search-results"></div>
+        </div>
+
         <h2>Groups</h2>
         <div id="groups"></div>
 
@@ -39,6 +51,11 @@
       </aside>
 
       <div id="tooltip"></div>
+
+      <aside id="detail" hidden>
+        <button id="detail-close" aria-label="Close">&times;</button>
+        <div id="detail-body"></div>
+      </aside>
     </div>
 
     <script type="module" src="/src/main.js"></script>

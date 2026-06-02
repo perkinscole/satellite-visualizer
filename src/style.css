@@ -117,6 +117,87 @@ body {
   color: var(--muted);
 }
 
+/* --- Search -------------------------------------------------------------- */
+.search-wrap {
+  position: relative;
+}
+
+#search {
+  width: 100%;
+  padding: 9px 11px;
+  font-size: 13.5px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+#search::placeholder {
+  color: var(--muted);
+}
+
+#search:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#search-results {
+  margin-top: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+#search-results:not(:empty) {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 4px;
+  background: rgba(8, 12, 22, 0.6);
+}
+
+.search-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.search-result:hover {
+  background: rgba(95, 168, 255, 0.16);
+}
+
+.search-result .sr-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result .sr-id {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.search-empty {
+  padding: 8px 9px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 .time-controls {
   display: flex;
   gap: 6px;
@@ -187,6 +268,102 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* --- Detail panel (selected satellite) ----------------------------------- */
+#detail {
+  position: fixed;
+  left: 28px;
+  bottom: 28px;
+  width: 280px;
+  padding: 18px 20px 20px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  z-index: 12;
+}
+
+#detail[hidden] {
+  display: none;
+}
+
+#detail-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+#detail-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+#detail .d-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  padding-right: 26px;
+  line-height: 1.25;
+}
+
+#detail .d-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+#detail .d-follow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 13px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+#detail .d-follow input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#detail .d-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  margin-top: 16px;
+}
+
+#detail .cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#detail .cell .k {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#detail .cell .v {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 640px) {
   #panel {
     width: calc(100% - 40px);
@@ -197,6 +374,12 @@ body {
   #title {
     left: 20px;
     top: 20px;
+  }
+  #detail {
+    left: 20px;
+    right: 20px;
+    bottom: 20px;
+    width: auto;
   }
 }
 

@@ -5,6 +5,9 @@ import {
   fetchGroup,
   SatelliteGroup,
   gmstFor,
+  orbitalElements,
+  satelliteState,
+  eciToScene,
   EARTH_RADIUS_UNITS,
 } from './satellites.js';
 
@@ -102,6 +105,7 @@ scene.add(atmosphere);
 
 // --- Satellite groups -----------------------------------------------------
 const loadedGroups = [];
+const searchIndex = []; // { name, noradId, group, idx } for every loaded sat
 const raycaster = new THREE.Raycaster();
 raycaster.params.Points.threshold = 0.025;
 const pointer = new THREE.Vector2();
@@ -112,6 +116,49 @@ const groupsEl = document.getElementById('groups');
 const countsEl = document.getElementById('counts');
 const tooltipEl = document.getElementById('tooltip');
 const clockEl = document.getElementById('clock');
+const searchEl = document.getElementById('search');
+const searchResultsEl = document.getElementById('search-results');
+const detailEl = document.getElementById('detail');
+const detailBodyEl = document.getElementById('detail-body');
+
+// --- Selection / highlight marker -----------------------------------------
+function makeRingTexture() {
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  ctx.strokeStyle = 'rgba(255,255,255,1)';
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.arc(s / 2, s / 2, s / 2 - 12, 0, Math.PI * 2);
+  ctx.stroke();
+  return new THREE.CanvasTexture(c);
+}
+
+const marker = new THREE.Sprite(
+  new THREE.SpriteMaterial({
+    map: makeRingTexture(),
+    color: 0xffffff,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  })
+);
+marker.scale.setScalar(0.13);
+marker.visible = false;
+marker.renderOrder = 5;
+scene.add(marker);
+
+let selected = null; // { group, idx }
+let follow = false;
+let detailCells = null;
+let lastDetailUpdate = 0;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+  );
+}
 
 async function loadAll() {
   const results = await Promise.allSettled(
@@ -125,8 +172,10 @@ async function loadAll() {
     const meta = GROUPS[i];
     if (res.status === 'fulfilled' && res.value.count > 0) {
       const group = res.value;
+      group.meta = meta;
       scene.add(group.points);
       loadedGroups.push(group);
+      indexGroup(group);
       addGroupRow(meta, group);
     } else {
       addGroupRow(meta, null);
@@ -135,6 +184,18 @@ async function loadAll() {
 
   loadingEl.style.display = 'none';
   updateCounts();
+}
+
+// Add every satellite in a group to the global search index.
+function indexGroup(group) {
+  group.sats.forEach((s, idx) => {
+    searchIndex.push({
+      name: s.name,
+      noradId: String(s.satrec.satnum),
+      group,
+      idx,
+    });
+  });
 }
 
 function addGroupRow(meta, group) {
@@ -150,6 +211,7 @@ function addGroupRow(meta, group) {
     if (group) group.setVisible(checkbox.checked);
     updateCounts();
   });
+  if (group) group.checkbox = checkbox;
 
   const swatch = document.createElement('span');
   swatch.className = 'group-swatch';
@@ -171,6 +233,142 @@ function updateCounts() {
     .filter((g) => g.visible)
     .reduce((sum, g) => sum + g.count, 0);
   countsEl.textContent = `Tracking ${total.toLocaleString()} satellites`;
+}
+
+// --- Selection + detail panel ---------------------------------------------
+function selectSatellite(group, idx) {
+  selected = { group, idx };
+  follow = true;
+
+  // Make sure the satellite's group is actually visible.
+  if (!group.visible) {
+    group.setVisible(true);
+    if (group.checkbox) group.checkbox.checked = true;
+    updateCounts();
+  }
+
+  showDetail(group, idx);
+  marker.visible = true;
+  frameSelection();
+}
+
+function deselect() {
+  selected = null;
+  follow = false;
+  marker.visible = false;
+  detailCells = null;
+  detailEl.hidden = true;
+}
+
+function showDetail(group, idx) {
+  const sat = group.sats[idx];
+  const els = orbitalElements(sat.satrec);
+  const groupLabel = group.meta ? group.meta.label : 'Satellite';
+
+  detailBodyEl.innerHTML = `
+    <div class="d-name">${escapeHtml(sat.name)}</div>
+    <div class="d-sub">NORAD ${escapeHtml(els.noradId)} &middot; ${escapeHtml(groupLabel)}</div>
+    <label class="d-follow">
+      <input type="checkbox" id="follow-toggle" ${follow ? 'checked' : ''}/>
+      Follow with camera
+    </label>
+    <div class="d-grid">
+      <div class="cell"><span class="k">Altitude</span><span class="v" data-f="alt">&mdash;</span></div>
+      <div class="cell"><span class="k">Speed</span><span class="v" data-f="vel">&mdash;</span></div>
+      <div class="cell"><span class="k">Latitude</span><span class="v" data-f="lat">&mdash;</span></div>
+      <div class="cell"><span class="k">Longitude</span><span class="v" data-f="lon">&mdash;</span></div>
+      <div class="cell"><span class="k">Inclination</span><span class="v">${els.inclinationDeg.toFixed(1)}&deg;</span></div>
+      <div class="cell"><span class="k">Period</span><span class="v">${els.periodMin.toFixed(1)} min</span></div>
+      <div class="cell"><span class="k">Apogee</span><span class="v">${Math.round(els.apogeeKm).toLocaleString()} km</span></div>
+      <div class="cell"><span class="k">Perigee</span><span class="v">${Math.round(els.perigeeKm).toLocaleString()} km</span></div>
+    </div>`;
+
+  detailCells = {
+    alt: detailBodyEl.querySelector('[data-f="alt"]'),
+    vel: detailBodyEl.querySelector('[data-f="vel"]'),
+    lat: detailBodyEl.querySelector('[data-f="lat"]'),
+    lon: detailBodyEl.querySelector('[data-f="lon"]'),
+  };
+  detailBodyEl.querySelector('#follow-toggle').addEventListener('change', (e) => {
+    follow = e.target.checked;
+  });
+  detailEl.hidden = false;
+}
+
+// Center the camera on the selected satellite and dolly to a close framing.
+function frameSelection() {
+  if (!selected) return;
+  const st = satelliteState(selected.group.sats[selected.idx].satrec, simTime);
+  if (!st) return;
+  const [x, y, z] = eciToScene(st.positionEci);
+  const target = new THREE.Vector3(x, y, z);
+  // View the satellite from outside, looking back toward Earth, so the planet
+  // is always the backdrop and the satellite stays framed against it.
+  const outward = target.clone().normalize();
+  if (!Number.isFinite(outward.x) || outward.lengthSq() < 1e-6) outward.set(0, 0, 1);
+  controls.target.copy(target);
+  camera.position.copy(target).add(outward.multiplyScalar(1.6));
+}
+
+// Per-frame: track the selected satellite, follow with the camera, refresh
+// the live readouts (throttled).
+function updateSelection(gmst) {
+  if (!selected) return;
+  const st = satelliteState(selected.group.sats[selected.idx].satrec, simTime, gmst);
+  if (!st) return;
+
+  const [x, y, z] = eciToScene(st.positionEci);
+  if (follow) {
+    const delta = new THREE.Vector3(x, y, z).sub(marker.position);
+    controls.target.add(delta);
+    camera.position.add(delta);
+  }
+  marker.position.set(x, y, z);
+
+  const nowMs = performance.now();
+  if (detailCells && nowMs - lastDetailUpdate > 180) {
+    lastDetailUpdate = nowMs;
+    detailCells.alt.textContent = `${Math.round(st.altitudeKm).toLocaleString()} km`;
+    detailCells.vel.textContent = `${st.speedKmS.toFixed(2)} km/s`;
+    detailCells.lat.textContent = `${st.latDeg.toFixed(2)}°`;
+    detailCells.lon.textContent = `${st.lonDeg.toFixed(2)}°`;
+  }
+}
+
+// --- Search ---------------------------------------------------------------
+function runSearch() {
+  const q = searchEl.value.trim().toLowerCase();
+  if (!q) {
+    searchResultsEl.innerHTML = '';
+    return;
+  }
+  const matches = [];
+  for (const e of searchIndex) {
+    if (e.name.toLowerCase().includes(q) || e.noradId.includes(q)) {
+      matches.push(e);
+      if (matches.length >= 40) break;
+    }
+  }
+  renderSearchResults(matches);
+}
+
+function renderSearchResults(matches) {
+  searchResultsEl.innerHTML = '';
+  if (!matches.length) {
+    searchResultsEl.innerHTML = '<div class="search-empty">No matches</div>';
+    return;
+  }
+  for (const e of matches) {
+    const row = document.createElement('button');
+    row.className = 'search-result';
+    row.innerHTML = `<span class="sr-name">${escapeHtml(e.name)}</span><span class="sr-id">${escapeHtml(e.noradId)}</span>`;
+    row.addEventListener('click', () => {
+      selectSatellite(e.group, e.idx);
+      searchEl.value = e.name;
+      searchResultsEl.innerHTML = '';
+    });
+    searchResultsEl.appendChild(row);
+  }
 }
 
 // --- Time -----------------------------------------------------------------
@@ -200,6 +398,36 @@ canvas.addEventListener('pointerleave', () => {
   hasPointer = false;
   tooltipEl.classList.remove('visible');
 });
+
+// Click-to-select: distinguish a click from an orbit-drag by movement.
+let pointerDown = null;
+canvas.addEventListener('pointerdown', (e) => {
+  pointerDown = { x: e.clientX, y: e.clientY };
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (!pointerDown) return;
+  const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+  pointerDown = null;
+  if (moved > 6) return; // it was a drag, not a click
+
+  pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+
+  let best = null;
+  for (const group of loadedGroups) {
+    if (!group.visible) continue;
+    const hits = raycaster.intersectObject(group.points, false);
+    if (hits.length && (!best || hits[0].distanceToRay < best.hit.distanceToRay)) {
+      best = { hit: hits[0], group };
+    }
+  }
+  if (best) selectSatellite(best.group, best.hit.index);
+});
+
+searchEl.addEventListener('input', runSearch);
+searchEl.addEventListener('focus', runSearch);
+document.getElementById('detail-close').addEventListener('click', deselect);
 
 function pickSatellite() {
   if (!hasPointer) return;
@@ -246,7 +474,8 @@ function animate() {
   lastReal = now;
   simTime = new Date(simTime.getTime() + dtMs);
 
-  earth.rotation.y = gmstFor(simTime);
+  const gmst = gmstFor(simTime);
+  earth.rotation.y = gmst;
 
   // Cap propagation per group per frame so a huge constellation (Starlink is
   // ~10k) spreads its work across frames instead of stalling the render loop.
@@ -254,6 +483,7 @@ function animate() {
     if (group.visible) group.update(simTime, 1500);
   }
 
+  updateSelection(gmst);
   pickSatellite();
   controls.update();
   renderer.render(scene, camera);
