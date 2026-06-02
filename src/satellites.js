@@ -5,9 +5,10 @@ export const EARTH_RADIUS_KM = 6371;
 export const EARTH_RADIUS_UNITS = 1;
 const KM_TO_UNITS = EARTH_RADIUS_UNITS / EARTH_RADIUS_KM;
 
-// CelesTrak satellite groups to offer. Fetched through our own /api/tle
-// endpoint (a Netlify function in prod, a Vite dev middleware locally) so the
-// data is proxied and edge-cached rather than hitting CelesTrak per-browser.
+// CelesTrak satellite groups to offer. CelesTrak sends an open CORS header
+// (access-control-allow-origin: *), so we fetch it directly from the browser.
+// Results are cached in localStorage to avoid re-downloading (CelesTrak 403s
+// repeat downloads of the same group within a couple of hours).
 export const GROUPS = [
   { id: 'stations', label: 'Space Stations', color: 0xffe27a, size: 0.05 },
   { id: 'gps-ops', label: 'GPS', color: 0x7affc0, size: 0.03 },
@@ -17,7 +18,7 @@ export const GROUPS = [
 ];
 
 function tleUrl(groupId) {
-  return `/api/tle?group=${encodeURIComponent(groupId)}`;
+  return `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(groupId)}&FORMAT=tle`;
 }
 
 // A soft circular sprite so points render as glowing dots, not squares.
@@ -116,6 +117,7 @@ export class SatelliteGroup {
     this.id = id;
     this.sats = sats;
     this.visible = true;
+    this.cursor = 0; // round-robin position for budgeted propagation
 
     const count = sats.length;
     this.positions = new Float32Array(count * 3);
@@ -138,32 +140,43 @@ export class SatelliteGroup {
     this.points.frustumCulled = false;
   }
 
-  // Propagate every satellite to `date` and update GPU positions.
+  // Propagate up to `budget` satellites to `date` and update their GPU
+  // positions, advancing a round-robin cursor so the work per frame is bounded
+  // no matter how large the group is (a 10k-satellite group like Starlink
+  // refreshes over a handful of frames instead of stalling one).
   // Positions are in the ECI frame (the Earth mesh is counter-rotated by GMST).
-  update(date) {
-    const gmst = satellite.gstime(date);
+  // Geodetic altitude is intentionally NOT computed here; it is derived on
+  // demand for the single hovered satellite (see altitudeKm).
+  update(date, budget = Infinity) {
+    const n = this.sats.length;
+    if (n === 0) return;
+    const count = Math.min(budget, n);
     const pos = this.positions;
-    let w = 0;
-    for (let i = 0; i < this.sats.length; i++) {
-      const sat = this.sats[i];
-      const pv = satellite.propagate(sat.satrec, date);
-      const eci = pv.position;
-      if (!eci) {
-        pos[w] = pos[w + 1] = pos[w + 2] = 0;
-        sat.alt = null;
-      } else {
+    let i = this.cursor;
+    for (let k = 0; k < count; k++) {
+      const eci = satellite.propagate(this.sats[i].satrec, date).position;
+      const w = i * 3;
+      if (eci) {
         // ECI km -> scene units. Map ECI Z (north) to scene +Y.
         pos[w] = eci.x * KM_TO_UNITS;
         pos[w + 1] = eci.z * KM_TO_UNITS;
         pos[w + 2] = -eci.y * KM_TO_UNITS;
-        const geo = satellite.eciToGeodetic(eci, gmst);
-        sat.alt = geo.height;
-        sat.lat = satellite.degreesLat(geo.latitude);
-        sat.lon = satellite.degreesLong(geo.longitude);
+      } else {
+        pos[w] = pos[w + 1] = pos[w + 2] = 0;
       }
-      w += 3;
+      i = (i + 1) % n;
     }
+    this.cursor = i;
     this.points.geometry.attributes.position.needsUpdate = true;
+  }
+
+  // Altitude (km) of satellite `index`, derived from its current scene
+  // position. Cheap enough to call per hover instead of per frame.
+  altitudeKm(index) {
+    const w = index * 3;
+    const p = this.positions;
+    const r = Math.hypot(p[w], p[w + 1], p[w + 2]) * EARTH_RADIUS_KM;
+    return r > 0 ? r - EARTH_RADIUS_KM : null;
   }
 
   setVisible(v) {

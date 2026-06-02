@@ -220,7 +220,8 @@ function pickSatellite() {
   }
 
   const sat = best.group.sats[best.hit.index];
-  const alt = sat.alt != null ? `${Math.round(sat.alt)} km` : '—';
+  const altKm = best.group.altitudeKm(best.hit.index);
+  const alt = altKm != null ? `${Math.round(altKm)} km` : '—';
   tooltipEl.innerHTML = `<div class="name">${sat.name}</div><div class="detail">alt ${alt}</div>`;
   tooltipEl.classList.add('visible');
 }
@@ -247,8 +248,10 @@ function animate() {
 
   earth.rotation.y = gmstFor(simTime);
 
+  // Cap propagation per group per frame so a huge constellation (Starlink is
+  // ~10k) spreads its work across frames instead of stalling the render loop.
   for (const group of loadedGroups) {
-    if (group.visible) group.update(simTime);
+    if (group.visible) group.update(simTime, 1500);
   }
 
   pickSatellite();
