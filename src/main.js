@@ -10,6 +10,7 @@ import {
   eciToScene,
   geodeticToScene,
   groundTrack,
+  predictPasses,
   EARTH_RADIUS_UNITS,
   EARTH_RADIUS_KM,
 } from './satellites.js';
@@ -184,6 +185,30 @@ function escapeHtml(s) {
   );
 }
 
+// Observer location for pass predictions, remembered across sessions.
+function loadObserver() {
+  try {
+    const raw = localStorage.getItem('observer');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+let observer = loadObserver(); // { latDeg, lonDeg }
+
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+function azToCompass(deg) {
+  return COMPASS[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+}
+
+function fmtPassTime(date) {
+  return date.toLocaleString(undefined, {
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 async function loadAll() {
   const results = await Promise.allSettled(
     GROUPS.map(async (g) => {
@@ -315,6 +340,20 @@ function showDetail(group, idx) {
       <div class="cell"><span class="k">Period</span><span class="v">${els.periodMin.toFixed(1)} min</span></div>
       <div class="cell"><span class="k">Apogee</span><span class="v">${Math.round(els.apogeeKm).toLocaleString()} km</span></div>
       <div class="cell"><span class="k">Perigee</span><span class="v">${Math.round(els.perigeeKm).toLocaleString()} km</span></div>
+    </div>
+    <div class="d-passes">
+      <div class="dp-head">Visible passes over a location</div>
+      <div class="dp-form">
+        <input id="obs-lat" type="number" step="0.0001" placeholder="Latitude"
+          value="${observer ? observer.latDeg : ''}" />
+        <input id="obs-lon" type="number" step="0.0001" placeholder="Longitude"
+          value="${observer ? observer.lonDeg : ''}" />
+      </div>
+      <div class="dp-actions">
+        <button id="obs-geo" type="button">My location</button>
+        <button id="passes-go" type="button" class="primary">Find passes</button>
+      </div>
+      <div id="passes-out" class="dp-out"></div>
     </div>`;
 
   detailCells = {
@@ -332,7 +371,84 @@ function showDetail(group, idx) {
     footprintLine.visible = showTrack;
     if (showTrack) buildGroundTrack();
   });
+
+  const latEl = detailBodyEl.querySelector('#obs-lat');
+  const lonEl = detailBodyEl.querySelector('#obs-lon');
+  const passesOut = detailBodyEl.querySelector('#passes-out');
+
+  detailBodyEl.querySelector('#obs-geo').addEventListener('click', () => {
+    if (!navigator.geolocation) {
+      passesOut.innerHTML = '<div class="dp-empty">Geolocation not available.</div>';
+      return;
+    }
+    passesOut.innerHTML = '<div class="dp-empty">Locating&hellip;</div>';
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        latEl.value = pos.coords.latitude.toFixed(4);
+        lonEl.value = pos.coords.longitude.toFixed(4);
+        passesOut.innerHTML = '';
+        computePasses(latEl, lonEl, passesOut);
+      },
+      () => {
+        passesOut.innerHTML = '<div class="dp-empty">Could not get your location.</div>';
+      }
+    );
+  });
+
+  detailBodyEl.querySelector('#passes-go').addEventListener('click', () => {
+    computePasses(latEl, lonEl, passesOut);
+  });
+
   detailEl.hidden = false;
+}
+
+// Compute and render the next visible passes of the selected satellite over
+// the observer's location.
+function computePasses(latEl, lonEl, out) {
+  if (!selected) return;
+  const latDeg = parseFloat(latEl.value);
+  const lonDeg = parseFloat(lonEl.value);
+  if (!Number.isFinite(latDeg) || !Number.isFinite(lonDeg) || Math.abs(latDeg) > 90 || Math.abs(lonDeg) > 180) {
+    out.innerHTML = '<div class="dp-empty">Enter a valid latitude and longitude.</div>';
+    return;
+  }
+
+  observer = { latDeg, lonDeg };
+  try {
+    localStorage.setItem('observer', JSON.stringify(observer));
+  } catch {
+    // ignore storage errors
+  }
+
+  out.innerHTML = '<div class="dp-empty">Calculating&hellip;</div>';
+  // Defer so the "Calculating" message can paint before the heavy loop.
+  setTimeout(() => {
+    const satrec = selected.group.sats[selected.idx].satrec;
+    const passes = predictPasses(
+      satrec,
+      { latDeg, lonDeg, heightKm: 0 },
+      new Date(),
+      { hours: 48, stepSec: 30, minElevationDeg: 10 }
+    );
+    if (!passes.length) {
+      out.innerHTML = '<div class="dp-empty">No passes above 10° in the next 48 hours.</div>';
+      return;
+    }
+    out.innerHTML = passes
+      .slice(0, 8)
+      .map((p) => {
+        const durSec = Math.round((p.end - p.start) / 1000);
+        const mm = Math.floor(durSec / 60);
+        const ss = String(durSec % 60).padStart(2, '0');
+        return `<div class="pass">
+          <span class="pass-when">${escapeHtml(fmtPassTime(p.start))}</span>
+          <span class="pass-meta">max ${Math.round(p.peakElDeg)}° ${azToCompass(
+            p.peakAzDeg
+          )} &middot; ${mm}m ${ss}s</span>
+        </div>`;
+      })
+      .join('');
+  }, 20);
 }
 
 // Rebuild the one-orbit ground-track polyline for the selected satellite,

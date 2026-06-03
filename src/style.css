@@ -364,6 +364,111 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Pass predictions inside the detail panel */
+#detail .d-passes {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+#detail .dp-head {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 9px;
+}
+
+#detail .dp-form {
+  display: flex;
+  gap: 8px;
+}
+
+#detail .dp-form input {
+  width: 50%;
+  padding: 7px 9px;
+  font-size: 13px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+}
+
+#detail .dp-form input:focus {
+  border-color: var(--accent);
+}
+
+#detail .dp-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#detail .dp-actions button {
+  flex: 1;
+  padding: 8px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.13s, border-color 0.13s;
+}
+
+#detail .dp-actions button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#detail .dp-actions button.primary {
+  background: rgba(95, 168, 255, 0.18);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#detail .dp-actions button.primary:hover {
+  filter: brightness(1.12);
+}
+
+#detail .dp-out {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+#detail .pass {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 2px;
+  font-size: 12.5px;
+  border-bottom: 1px solid rgba(120, 160, 220, 0.08);
+}
+
+#detail .pass-when {
+  font-weight: 600;
+  color: var(--text);
+}
+
+#detail .pass-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#detail .dp-empty {
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
 @media (max-width: 640px) {
   #panel {
     width: calc(100% - 40px);
@@ -380,6 +485,8 @@ body {
     right: 20px;
     bottom: 20px;
     width: auto;
+    max-height: 70vh;
+    overflow-y: auto;
   }
 }
 
