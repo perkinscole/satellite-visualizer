@@ -130,6 +130,9 @@ export async function fetchByCatnr(catnr) {
   return sats;
 }
 
+// How much a satellite dims when it passes into Earth's shadow (eclipse).
+const ECLIPSE_DIM = 0.16;
+
 // A renderable cloud of satellites for one group.
 export class SatelliteGroup {
   constructor({ id, color, size }, sats) {
@@ -137,17 +140,30 @@ export class SatelliteGroup {
     this.sats = sats;
     this.visible = true;
     this.cursor = 0; // round-robin position for budgeted propagation
+    this.baseColor = new THREE.Color(color);
 
     const count = sats.length;
     this.positions = new Float32Array(count * 3);
+    // Per-vertex colors let us dim individual satellites that are in eclipse
+    // without touching the others. Start every satellite at full brightness.
+    this.colors = new Float32Array(count * 3);
+    for (let k = 0; k < count; k++) {
+      this.colors[k * 3] = this.baseColor.r;
+      this.colors[k * 3 + 1] = this.baseColor.g;
+      this.colors[k * 3 + 2] = this.baseColor.b;
+    }
+    // Track each satellite's lit/shadowed state so a later detail lookup can
+    // report it without re-deriving the eclipse geometry.
+    this.lit = new Uint8Array(count).fill(1);
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
 
     const material = new THREE.PointsMaterial({
-      color,
       size,
       map: getDotTexture(),
+      vertexColors: true,
       sizeAttenuation: true,
       transparent: true,
       opacity: 0.95,
@@ -166,27 +182,69 @@ export class SatelliteGroup {
   // Positions are in the ECI frame (the Earth mesh is counter-rotated by GMST).
   // Geodetic altitude is intentionally NOT computed here; it is derived on
   // demand for the single hovered satellite (see altitudeKm).
-  update(date, budget = Infinity) {
+  // `sunDir`, when provided, is a unit vector toward the Sun in scene space.
+  // With it we test each propagated satellite against Earth's cylindrical
+  // shadow (umbra) and dim the ones in eclipse, so the cloud visibly darkens
+  // on the planet's night side, the way real satellites wink out at orbital
+  // sunset. Pass `dim = false` to keep everything at full brightness.
+  update(date, budget = Infinity, sunDir = null, dim = true) {
     const n = this.sats.length;
     if (n === 0) return;
     const count = Math.min(budget, n);
     const pos = this.positions;
+    const col = this.colors;
+    const shade = dim && sunDir;
+    const baseR = this.baseColor.r;
+    const baseG = this.baseColor.g;
+    const baseB = this.baseColor.b;
+    // Earth radius in the same units as the scene positions.
+    const re = EARTH_RADIUS_UNITS;
+    let colorsDirty = false;
     let i = this.cursor;
     for (let k = 0; k < count; k++) {
       const eci = satellite.propagate(this.sats[i].satrec, date).position;
       const w = i * 3;
+      let lit = 1;
       if (eci) {
         // ECI km -> scene units. Map ECI Z (north) to scene +Y.
-        pos[w] = eci.x * KM_TO_UNITS;
-        pos[w + 1] = eci.z * KM_TO_UNITS;
-        pos[w + 2] = -eci.y * KM_TO_UNITS;
+        const x = eci.x * KM_TO_UNITS;
+        const y = eci.z * KM_TO_UNITS;
+        const z = -eci.y * KM_TO_UNITS;
+        pos[w] = x;
+        pos[w + 1] = y;
+        pos[w + 2] = z;
+        if (shade) {
+          // Cylindrical umbra test: a satellite is shadowed when it sits on the
+          // anti-sun side of Earth (proj < 0) and its distance from the
+          // Earth-Sun axis is less than Earth's radius.
+          const proj = x * sunDir.x + y * sunDir.y + z * sunDir.z;
+          if (proj < 0) {
+            const perp2 = x * x + y * y + z * z - proj * proj;
+            if (perp2 < re * re) lit = 0;
+          }
+        }
       } else {
         pos[w] = pos[w + 1] = pos[w + 2] = 0;
+      }
+      if (this.lit[i] !== lit) {
+        this.lit[i] = lit;
+        const f = lit ? 1 : ECLIPSE_DIM;
+        col[w] = baseR * f;
+        col[w + 1] = baseG * f;
+        col[w + 2] = baseB * f;
+        colorsDirty = true;
       }
       i = (i + 1) % n;
     }
     this.cursor = i;
     this.points.geometry.attributes.position.needsUpdate = true;
+    if (colorsDirty) this.points.geometry.attributes.color.needsUpdate = true;
+  }
+
+  // Whether satellite `index` was sunlit (true) or in eclipse (false) as of the
+  // last update that passed a sun direction. Used by the detail panel.
+  isLit(index) {
+    return this.lit[index] === 1;
   }
 
   // Altitude (km) of satellite `index`, derived from its current scene
@@ -211,6 +269,34 @@ export class SatelliteGroup {
 // Current GMST rotation (radians) so the caller can align the Earth mesh.
 export function gmstFor(date) {
   return satellite.gstime(date);
+}
+
+// --- Sun position --------------------------------------------------------
+
+// Unit vector toward the Sun in the ECI frame, using the low-precision
+// almanac formula (good to ~0.01 deg, far better than we need for lighting).
+// Reference: U.S. Naval Observatory, "Approximate Solar Coordinates".
+export function sunEciUnit(date) {
+  // Julian days since J2000.0 (2000-01-01 12:00 UTC).
+  const n = date.getTime() / 86400000 - 10957.5;
+  const rad = Math.PI / 180;
+  const L = (280.46 + 0.9856474 * n) % 360; // mean longitude
+  const g = ((357.528 + 0.9856003 * n) % 360) * rad; // mean anomaly
+  // Ecliptic longitude.
+  const lambda = (L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * rad;
+  // Obliquity of the ecliptic.
+  const eps = (23.439 - 0.0000004 * n) * rad;
+  const x = Math.cos(lambda);
+  const y = Math.cos(eps) * Math.sin(lambda);
+  const z = Math.sin(eps) * Math.sin(lambda);
+  return { x, y, z };
+}
+
+// Sun direction as a scene-space unit vector, using the same ECI->scene axis
+// mapping as the satellites (ECI Z -> scene +Y, ECI Y -> scene -Z).
+export function sunSceneDirection(date) {
+  const s = sunEciUnit(date);
+  return { x: s.x, y: s.z, z: -s.y };
 }
 
 // --- Orbital analysis helpers --------------------------------------------

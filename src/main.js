@@ -13,14 +13,14 @@ import {
   geodeticToScene,
   groundTrack,
   predictPasses,
+  sunSceneDirection,
   EARTH_RADIUS_UNITS,
   EARTH_RADIUS_KM,
 } from './satellites.js';
 
 const EARTH_TEXTURE =
   'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_atmos_2048.jpg';
-const EARTH_SPECULAR =
-  'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_specular_2048.jpg';
+const EARTH_NIGHT_TEXTURE = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-night.jpg';
 
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -38,11 +38,10 @@ controls.minDistance = 1.4;
 controls.maxDistance = 30;
 controls.rotateSpeed = 0.5;
 
-// --- Lighting -------------------------------------------------------------
-scene.add(new THREE.AmbientLight(0x668, 0.55));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(5, 2, 4);
-scene.add(sun);
+// Direction toward the Sun in scene space, refreshed every frame from the
+// simulated clock. Drives the Earth's day/night shading and the satellite
+// eclipse test.
+const sunDir = new THREE.Vector3(1, 0, 0);
 
 // --- Starfield ------------------------------------------------------------
 function makeStars() {
@@ -64,9 +63,67 @@ function makeStars() {
 makeStars();
 
 // --- Earth ----------------------------------------------------------------
+// Custom day/night material: blends a daytime map with a city-lights night map
+// across a soft terminator driven by the real Sun direction, with a warm band
+// of colour at dawn/dusk. A 1x1 black fallback stands in until (or instead of)
+// the night-lights texture loads, so a failed fetch degrades to a dark night
+// side rather than breaking the shader.
+const blackPixel = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+blackPixel.needsUpdate = true;
+
+const earthMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    dayMap: { value: null },
+    nightMap: { value: blackPixel },
+    sunDir: { value: sunDir },
+    hasNight: { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    varying vec3 vWorldNormal;
+    void main() {
+      vUv = uv;
+      vWorldNormal = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    uniform sampler2D dayMap;
+    uniform sampler2D nightMap;
+    uniform vec3 sunDir;
+    uniform float hasNight;
+    varying vec2 vUv;
+    varying vec3 vWorldNormal;
+
+    vec3 toLinear(vec3 c) { return pow(c, vec3(2.2)); }
+
+    void main() {
+      vec3 day = toLinear(texture2D(dayMap, vUv).rgb);
+      float lambert = dot(normalize(vWorldNormal), normalize(sunDir));
+      // Soft terminator: fully day above +0.12, fully night below -0.08.
+      float dayMix = smoothstep(-0.08, 0.12, lambert);
+
+      // Day side: textured, brighter where the Sun is high, with a little fill.
+      vec3 litDay = day * (0.18 + 0.95 * max(lambert, 0.0));
+
+      // Night side: city lights if we have them, else a faint blue earthshine.
+      vec3 night = hasNight > 0.5
+        ? toLinear(texture2D(nightMap, vUv).rgb) * 1.2
+        : day * 0.03 * vec3(0.55, 0.7, 1.0);
+
+      vec3 color = mix(night, litDay, dayMix);
+
+      // Warm sunset/sunrise band hugging the terminator.
+      float term = exp(-pow(lambert / 0.13, 2.0));
+      color += vec3(0.55, 0.26, 0.08) * term * 0.45;
+
+      gl_FragColor = vec4(color, 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+
 const earth = new THREE.Mesh(
   new THREE.SphereGeometry(EARTH_RADIUS_UNITS, 96, 96),
-  new THREE.MeshPhongMaterial({ color: 0x223344, shininess: 12 })
+  earthMaterial
 );
 scene.add(earth);
 
@@ -74,15 +131,49 @@ const loader = new THREE.TextureLoader();
 loader.setCrossOrigin('anonymous');
 loader.load(EARTH_TEXTURE, (tex) => {
   tex.colorSpace = THREE.SRGBColorSpace;
-  earth.material.map = tex;
-  earth.material.color.set(0xffffff);
-  earth.material.needsUpdate = true;
+  earthMaterial.uniforms.dayMap.value = tex;
+  earthMaterial.needsUpdate = true;
 });
-loader.load(EARTH_SPECULAR, (tex) => {
-  earth.material.specularMap = tex;
-  earth.material.specular = new THREE.Color(0x335577);
-  earth.material.needsUpdate = true;
-});
+loader.load(
+  EARTH_NIGHT_TEXTURE,
+  (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    earthMaterial.uniforms.nightMap.value = tex;
+    earthMaterial.uniforms.hasNight.value = 1;
+    earthMaterial.needsUpdate = true;
+  },
+  undefined,
+  () => {
+    // Night-lights fetch failed; the faint-blue fallback in the shader stands in.
+  }
+);
+
+// --- Sun glow -------------------------------------------------------------
+// A soft additive disc placed far along the Sun direction, so the light source
+// is visible in the sky and reads as the thing lighting the globe.
+function makeGlowTexture() {
+  const s = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(255,250,230,1)');
+  g.addColorStop(0.25, 'rgba(255,238,190,0.85)');
+  g.addColorStop(1, 'rgba(255,238,190,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(c);
+}
+const sunGlow = new THREE.Sprite(
+  new THREE.SpriteMaterial({
+    map: makeGlowTexture(),
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+);
+sunGlow.scale.setScalar(14);
+scene.add(sunGlow);
 
 // Atmosphere glow (additive back-facing shell).
 const atmosphere = new THREE.Mesh(
@@ -158,6 +249,7 @@ scene.add(marker);
 let selected = null; // { group, idx }
 let follow = false;
 let showTrack = true;
+let showShadow = true; // dim satellites that pass through Earth's shadow
 let detailCells = null;
 let lastDetailUpdate = 0;
 let lastTrackBuild = 0;
@@ -333,6 +425,7 @@ function showDetail(group, idx) {
       <input type="checkbox" id="track-toggle" ${showTrack ? 'checked' : ''}/>
       Show ground track &amp; coverage
     </label>
+    <div class="d-sun"><span class="d-sun-dot" data-f="sundot"></span><span data-f="sun">&mdash;</span></div>
     <div class="d-grid">
       <div class="cell"><span class="k">Altitude</span><span class="v" data-f="alt">&mdash;</span></div>
       <div class="cell"><span class="k">Speed</span><span class="v" data-f="vel">&mdash;</span></div>
@@ -370,6 +463,8 @@ function showDetail(group, idx) {
     vel: detailBodyEl.querySelector('[data-f="vel"]'),
     lat: detailBodyEl.querySelector('[data-f="lat"]'),
     lon: detailBodyEl.querySelector('[data-f="lon"]'),
+    sun: detailBodyEl.querySelector('[data-f="sun"]'),
+    sundot: detailBodyEl.querySelector('[data-f="sundot"]'),
   };
   detailBodyEl.querySelector('#follow-toggle').addEventListener('change', (e) => {
     follow = e.target.checked;
@@ -563,6 +658,12 @@ function updateSelection(gmst) {
     detailCells.vel.textContent = `${st.speedKmS.toFixed(2)} km/s`;
     detailCells.lat.textContent = `${st.latDeg.toFixed(2)}°`;
     detailCells.lon.textContent = `${st.lonDeg.toFixed(2)}°`;
+    // Eclipse test for the selected satellite, independent of the dimming
+    // toggle: is it in sunlight or in Earth's shadow right now?
+    const proj = x * sunDir.x + y * sunDir.y + z * sunDir.z;
+    const inShadow = proj < 0 && x * x + y * y + z * z - proj * proj < EARTH_RADIUS_UNITS * EARTH_RADIUS_UNITS;
+    detailCells.sun.textContent = inShadow ? "In Earth's shadow" : 'In sunlight';
+    detailCells.sundot.classList.toggle('shadow', inShadow);
   }
 }
 
@@ -652,7 +753,7 @@ function addCustomGroup(sats, label) {
   addGroupRow(meta, group);
   updateCounts();
   // Prime positions so it is immediately pickable/selectable.
-  group.update(simTime);
+  group.update(simTime, Infinity, sunDir, showShadow);
   selectSatellite(group, 0);
   return group;
 }
@@ -792,6 +893,14 @@ searchEl.addEventListener('input', runSearch);
 searchEl.addEventListener('focus', runSearch);
 document.getElementById('detail-close').addEventListener('click', deselect);
 
+const shadowToggle = document.getElementById('shadow-toggle');
+if (shadowToggle) {
+  showShadow = shadowToggle.checked;
+  shadowToggle.addEventListener('change', () => {
+    showShadow = shadowToggle.checked;
+  });
+}
+
 function pickSatellite() {
   if (!hasPointer) return;
   raycaster.setFromCamera(pointer, camera);
@@ -840,10 +949,15 @@ function animate() {
   const gmst = gmstFor(simTime);
   earth.rotation.y = gmst;
 
+  // Update the Sun direction for this instant and place the glow far along it.
+  const s = sunSceneDirection(simTime);
+  sunDir.set(s.x, s.y, s.z).normalize();
+  sunGlow.position.copy(sunDir).multiplyScalar(60);
+
   // Cap propagation per group per frame so a huge constellation (Starlink is
   // ~10k) spreads its work across frames instead of stalling the render loop.
   for (const group of loadedGroups) {
-    if (group.visible) group.update(simTime, 1500);
+    if (group.visible) group.update(simTime, 1500, sunDir, showShadow);
   }
 
   updateSelection(gmst);
