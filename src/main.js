@@ -22,6 +22,29 @@ const EARTH_TEXTURE =
   'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_atmos_2048.jpg';
 const EARTH_NIGHT_TEXTURE = 'https://cdn.jsdelivr.net/npm/three-globe/example/img/earth-night.jpg';
 
+// NASA GIBS serves daily global satellite imagery with an open CORS header, so
+// we can wrap the globe in the actual Earth as photographed from space. The
+// VIIRS true-color mosaic shows real cloud cover and storms. A given day's
+// mosaic fills in over the course of the day as satellite passes come down, so
+// we request the most recent fully populated day (a couple days back) to avoid
+// black gaps, and fall back to the static blue-marble texture if it fails.
+function gibsTrueColorUrl(date) {
+  const d = date.toISOString().slice(0, 10);
+  const params = new URLSearchParams({
+    SERVICE: 'WMS',
+    REQUEST: 'GetMap',
+    VERSION: '1.3.0',
+    LAYERS: 'VIIRS_SNPP_CorrectedReflectance_TrueColor',
+    CRS: 'EPSG:4326',
+    BBOX: '-90,-180,90,180',
+    WIDTH: '2048',
+    HEIGHT: '1024',
+    FORMAT: 'image/jpeg',
+    TIME: d,
+  });
+  return `https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?${params.toString()}`;
+}
+
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -112,9 +135,10 @@ const earthMaterial = new THREE.ShaderMaterial({
 
       vec3 color = mix(night, litDay, dayMix);
 
-      // Warm sunset/sunrise band hugging the terminator.
-      float term = exp(-pow(lambert / 0.13, 2.0));
-      color += vec3(0.55, 0.26, 0.08) * term * 0.45;
+      // Thin warm sunrise/sunset line right at the terminator (biased a touch
+      // onto the night side, where the lit atmosphere actually glows red).
+      float term = exp(-pow((lambert + 0.015) / 0.06, 2.0));
+      color += vec3(0.5, 0.22, 0.07) * term * 0.3;
 
       gl_FragColor = vec4(color, 1.0);
       #include <colorspace_fragment>
@@ -129,11 +153,35 @@ scene.add(earth);
 
 const loader = new THREE.TextureLoader();
 loader.setCrossOrigin('anonymous');
+
+// Live NASA imagery takes precedence over the static blue-marble fallback.
+let liveImageryLoaded = false;
+
 loader.load(EARTH_TEXTURE, (tex) => {
   tex.colorSpace = THREE.SRGBColorSpace;
-  earthMaterial.uniforms.dayMap.value = tex;
+  // Only adopt the blue-marble fallback if the live imagery hasn't loaded yet.
+  if (!liveImageryLoaded) earthMaterial.uniforms.dayMap.value = tex;
   earthMaterial.needsUpdate = true;
 });
+
+// Try the most recent fully populated GIBS day, then the day before if that
+// request fails (e.g. the latest mosaic isn't complete yet).
+function loadLiveImagery(daysBack) {
+  if (daysBack > 4) return; // give up; the blue-marble fallback stays
+  const when = new Date(Date.now() - daysBack * 86400000);
+  loader.load(
+    gibsTrueColorUrl(when),
+    (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      liveImageryLoaded = true;
+      earthMaterial.uniforms.dayMap.value = tex;
+      earthMaterial.needsUpdate = true;
+    },
+    undefined,
+    () => loadLiveImagery(daysBack + 1)
+  );
+}
+loadLiveImagery(1);
 loader.load(
   EARTH_NIGHT_TEXTURE,
   (tex) => {
