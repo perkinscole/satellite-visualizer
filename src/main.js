@@ -3,6 +3,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   GROUPS,
   fetchGroup,
+  fetchByCatnr,
+  parseTle,
   SatelliteGroup,
   gmstFor,
   orbitalElements,
@@ -341,6 +343,13 @@ function showDetail(group, idx) {
       <div class="cell"><span class="k">Apogee</span><span class="v">${Math.round(els.apogeeKm).toLocaleString()} km</span></div>
       <div class="cell"><span class="k">Perigee</span><span class="v">${Math.round(els.perigeeKm).toLocaleString()} km</span></div>
     </div>
+    <div class="d-export">
+      <span class="dp-head">Export one orbit</span>
+      <div class="d-export-btns">
+        <button id="exp-csv" type="button">CSV</button>
+        <button id="exp-json" type="button">JSON</button>
+      </div>
+    </div>
     <div class="d-passes">
       <div class="dp-head">Visible passes over a location</div>
       <div class="dp-form">
@@ -371,6 +380,9 @@ function showDetail(group, idx) {
     footprintLine.visible = showTrack;
     if (showTrack) buildGroundTrack();
   });
+
+  detailBodyEl.querySelector('#exp-csv').addEventListener('click', () => exportSelection('csv'));
+  detailBodyEl.querySelector('#exp-json').addEventListener('click', () => exportSelection('json'));
 
   const latEl = detailBodyEl.querySelector('#obs-lat');
   const lonEl = detailBodyEl.querySelector('#obs-lon');
@@ -554,6 +566,138 @@ function updateSelection(gmst) {
   }
 }
 
+// --- Export ---------------------------------------------------------------
+function download(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Export one orbit of the selected satellite (sampled from real "now") as CSV
+// or JSON. JSON also carries the derived orbital elements.
+function exportSelection(format) {
+  if (!selected) return;
+  const sat = selected.group.sats[selected.idx];
+  const els = orbitalElements(sat.satrec);
+  const now = new Date();
+  const spanMs = els.periodMin * 60 * 1000;
+  const N = 120;
+  const samples = [];
+  for (let k = 0; k <= N; k++) {
+    const t = new Date(now.getTime() + (spanMs * k) / N);
+    const s = satelliteState(sat.satrec, t);
+    if (s) {
+      samples.push({
+        timeUtc: t.toISOString(),
+        latDeg: s.latDeg,
+        lonDeg: s.lonDeg,
+        altitudeKm: s.altitudeKm,
+        speedKmS: s.speedKmS,
+      });
+    }
+  }
+  const base = (sat.name || 'satellite').replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '');
+
+  if (format === 'json') {
+    const payload = {
+      name: sat.name,
+      noradId: els.noradId,
+      group: selected.group.meta ? selected.group.meta.label : null,
+      generatedAt: now.toISOString(),
+      elements: els,
+      groundTrack: samples,
+    };
+    download(`${base}_${els.noradId}.json`, JSON.stringify(payload, null, 2), 'application/json');
+  } else {
+    const rows = [['time_utc', 'lat_deg', 'lon_deg', 'alt_km', 'speed_km_s']];
+    for (const s of samples) {
+      rows.push([
+        s.timeUtc,
+        s.latDeg.toFixed(4),
+        s.lonDeg.toFixed(4),
+        s.altitudeKm.toFixed(2),
+        s.speedKmS.toFixed(4),
+      ]);
+    }
+    download(`${base}_${els.noradId}.csv`, rows.map((r) => r.join(',')).join('\n'), 'text/csv');
+  }
+}
+
+// --- Custom satellites ----------------------------------------------------
+let customCount = 0;
+const CUSTOM_COLORS = [0xff5fa8, 0x5fffd0, 0xffd45f, 0xb98bff];
+
+// Add a freshly parsed set of sats as a new selectable group, then select the
+// first one so the user immediately sees it.
+function addCustomGroup(sats, label) {
+  if (!sats.length) return null;
+  customCount += 1;
+  const meta = {
+    id: `custom-${customCount}`,
+    label: label || `Custom ${customCount}`,
+    color: CUSTOM_COLORS[(customCount - 1) % CUSTOM_COLORS.length],
+    size: 0.05,
+  };
+  const group = new SatelliteGroup(meta, sats);
+  group.meta = meta;
+  scene.add(group.points);
+  loadedGroups.push(group);
+  indexGroup(group);
+  addGroupRow(meta, group);
+  updateCounts();
+  // Prime positions so it is immediately pickable/selectable.
+  group.update(simTime);
+  selectSatellite(group, 0);
+  return group;
+}
+
+function setupCustomControls() {
+  const catnrEl = document.getElementById('catnr');
+  const catnrGo = document.getElementById('catnr-go');
+  const tleInput = document.getElementById('tle-input');
+  const tleGo = document.getElementById('tle-go');
+  const msg = document.getElementById('custom-msg');
+
+  const say = (text, isError) => {
+    msg.textContent = text;
+    msg.classList.toggle('error', !!isError);
+  };
+
+  catnrGo.addEventListener('click', async () => {
+    const id = catnrEl.value.trim();
+    if (!/^\d{1,9}$/.test(id)) {
+      say('Enter a numeric NORAD ID.', true);
+      return;
+    }
+    say('Fetching…', false);
+    try {
+      const sats = await fetchByCatnr(id);
+      const group = addCustomGroup(sats, sats[0].name || `NORAD ${id}`);
+      say(`Added ${group.count} satellite${group.count > 1 ? 's' : ''}.`, false);
+      catnrEl.value = '';
+    } catch (err) {
+      say(err.message || 'Lookup failed.', true);
+    }
+  });
+
+  tleGo.addEventListener('click', () => {
+    const sats = parseTle(tleInput.value);
+    if (!sats.length) {
+      say('No valid TLE found. Paste name + two element lines.', true);
+      return;
+    }
+    const group = addCustomGroup(sats, sats.length === 1 ? sats[0].name : 'Pasted TLE');
+    say(`Added ${group.count} satellite${group.count > 1 ? 's' : ''}.`, false);
+    tleInput.value = '';
+  });
+}
+
 // --- Search ---------------------------------------------------------------
 function runSearch() {
   const q = searchEl.value.trim().toLowerCase();
@@ -710,5 +854,6 @@ function animate() {
   clockEl.textContent = simTime.toUTCString().replace('GMT', 'UTC');
 }
 
+setupCustomControls();
 loadAll();
 animate();

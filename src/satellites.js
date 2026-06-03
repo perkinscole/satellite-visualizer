@@ -112,6 +112,24 @@ export async function fetchGroup(groupId) {
   }
 }
 
+// Fetch a single satellite by its NORAD catalog number from CelesTrak.
+// Returns parsed sat records (usually one). Not cached: these are ad-hoc,
+// user-initiated lookups.
+export async function fetchByCatnr(catnr) {
+  const id = String(catnr).trim();
+  if (!/^\d{1,9}$/.test(id)) throw new Error('NORAD ID must be a number');
+  const url = `https://celestrak.org/NORAD/elements/gp.php?CATNR=${id}&FORMAT=tle`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  if (/no gp data|GP data has not updated/i.test(text)) {
+    throw new Error('No catalog entry for that ID');
+  }
+  const sats = parseTle(text);
+  if (!sats.length) throw new Error('No usable orbit data returned');
+  return sats;
+}
+
 // A renderable cloud of satellites for one group.
 export class SatelliteGroup {
   constructor({ id, color, size }, sats) {

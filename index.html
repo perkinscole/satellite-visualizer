@@ -47,6 +47,24 @@
         </div>
         <div id="clock">—</div>
 
+        <h2>Add your own</h2>
+        <div class="custom-controls">
+          <div class="custom-row">
+            <input id="catnr" type="text" inputmode="numeric" placeholder="NORAD ID, e.g. 25544" />
+            <button id="catnr-go" type="button">Add</button>
+          </div>
+          <details class="tle-details">
+            <summary>Paste TLE data</summary>
+            <textarea
+              id="tle-input"
+              rows="4"
+              placeholder="NAME&#10;1 25544U ...&#10;2 25544 ..."
+            ></textarea>
+            <button id="tle-go" type="button">Add satellites</button>
+          </details>
+          <div id="custom-msg" class="custom-msg"></div>
+        </div>
+
         <div id="counts"></div>
       </aside>
 
